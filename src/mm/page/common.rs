@@ -1,0 +1,129 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::ptr::NonNull;
+use std::collections::LinkedList;
+use std::ptr;
+use std::mem;
+use std::os::unix::io::{RawFd, AsRawFd};
+use std::fs::File;
+use std::io::Error;
+use libc::{mmap, MAP_FAILED, PROT_READ, PROT_WRITE, MAP_SHARED};
+
+use crate::start::dune::DUNE_FD;
+use crate::mm::pgtable::{PGSIZE, PGSHIFT, PGTABLE_MMAP_BASE};
+
+const PAGEBASE: u64 = 0x0; // Replace with actual value
+
+type PhysAddr = u64;
+type VirtAddr = usize;
+
+const PAGE_FLAG_MAPPED: u64 = 0x1;
+
+struct Page {
+    link: LinkedList<NonNull<Page>>,
+    ref_count: AtomicU64,
+    flags: AtomicU64,
+    vmpl: AtomicU64,
+}
+
+static mut PAGES: Option<NonNull<Page>> = None;
+static mut NUM_DUNE_PAGES: i32 = 0;
+static mut NUM_VMPL_PAGES: i32 = 0;
+
+const PAGEBASE: usize = 0x0;
+const MAX_PAGES: usize = 2 << 20;
+
+fn get_page(pg: &mut Page) {
+    assert!(!PAGES.is_none());
+    assert!(pg as *mut _ >= PAGES.unwrap().as_ptr());
+    assert!(pg as *mut _ < unsafe { PAGES.unwrap().as_ptr().offset(MAX_PAGES as isize) });
+    assert_eq!(pg.vmpl.load(Ordering::SeqCst), 1);
+
+    pg.ref_count.fetch_add(1, Ordering::SeqCst);
+}
+
+fn put_page(pg: &mut Page) {
+    assert!(!PAGES.is_none());
+    assert!(pg as *mut _ >= PAGES.unwrap().as_ptr());
+    assert!(pg as *mut _ < unsafe { PAGES.unwrap().as_ptr().offset(MAX_PAGES as isize) });
+    assert_eq!(pg.vmpl.load(Ordering::SeqCst), 1);
+    assert!(pg.ref_count.load(Ordering::SeqCst) > 0);
+
+    pg.ref_count.fetch_sub(1, Ordering::SeqCst);
+}
+
+extern "C" {
+    fn vmpl_page_init(fd: i32) -> i32;
+    fn dune_page_init(fd: i32) -> i32;
+    fn vmpl_page_stats();
+    fn dune_page_stats();
+    fn vmpl_page_test(vmpl_fd: i32);
+    fn dune_page_test(vmpl_fd: i32);
+}
+
+fn page_init(fd: i32) -> Result<(), i32> {
+    unsafe {
+        PAGES = Some(NonNull::new(
+            libc::malloc(mem::size_of::<Page>() * MAX_PAGES) as *mut Page
+        ).ok_or(libc::ENOMEM)?);
+
+        if vmpl_page_init(fd) != 0 {
+            return Err(libc::ENOMEM);
+        }
+
+        if dune_page_init(fd) != 0 {
+            return Err(libc::ENOMEM);
+        }
+    }
+
+    Ok(())
+}
+
+fn page_exit() -> i32 {
+    unsafe {
+        libc::free(PAGES.unwrap().as_ptr() as *mut libc::c_void);
+    }
+    0
+}
+
+fn page_stats() {
+    println!("Page Stats:");
+    unsafe {
+        vmpl_page_stats();
+        dune_page_stats();
+    }
+}
+
+#[cfg(feature = "CONFIG_VMPL_TEST")]
+fn page_test(vmpl_fd: i32) {
+    log::info!("Page Test");
+    unsafe {
+        vmpl_page_test(vmpl_fd);
+        dune_page_test(vmpl_fd);
+    }
+    log::info!("Page Test Passed");
+}
+
+pub fn do_mapping(fd: &File, phys: u64, len: usize) -> Result<*mut libc::c_void, Error> {
+    let addr = unsafe {
+        mmap(
+            (PGTABLE_MMAP_BASE + phys) as *mut libc::c_void,
+            len,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            fd.as_raw_fd(),
+            phys as i64,
+        )
+    };
+
+    if addr == MAP_FAILED {
+        return Err(Error::last_os_error());
+    }
+
+    log::debug!("Marking page {:x}-{:x} as mapped", phys, phys + len);
+    for i in (0..len).step_by(PGSIZE) {
+        let pg = unsafe { &mut *vmpl_pa2page(phys + i as u64) };
+        pg.flags.store(PAGE_FLAG_MAPPED, Ordering::SeqCst);
+    }
+
+    Ok(addr)
+}
