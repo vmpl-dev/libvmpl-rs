@@ -1,5 +1,9 @@
+/// x86_64-specific system module
+pub mod x86_64;
 /// APIC (Advanced Programmable Interrupt Controller) module
 pub mod apic;
+/// IDT (Interrupt Descriptor Table) module
+pub mod idt;
 /// VMPL Core module
 pub mod core;
 /// IOCTL module
@@ -15,10 +19,11 @@ pub mod signal;
 /// Syscall module
 pub mod syscall;
 
+pub use crate::sys::x86_64::*;
 pub use crate::sys::apic::*;
 pub use crate::sys::percpu::*;
-pub use crate::sys::seimi::setup_seimi;
-pub use crate::sys::signal::setup_signal;
+pub use crate::sys::seimi::seimi_init;
+pub use crate::sys::signal::signal_init;
 pub use crate::sys::serial::serial_init;
 pub use crate::sys::syscall::setup_syscall;
 pub use crate::sys::syscall::setup_vsyscall;

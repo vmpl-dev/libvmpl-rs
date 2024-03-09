@@ -7,6 +7,8 @@ use libc::sched_getcpu;
 use x86_64::registers::model_specific::Msr;
 use std::arch::asm;
 
+use crate::error::VmplError;
+
 /// APIC related constants
 const MSR_APIC_BASE: u32 = 0x1B;
 const MSR_APIC_ICR: u32 = 0x830;
@@ -30,7 +32,7 @@ pub fn apic_get_id() -> u32 {
     }
 }
 
-pub fn apic_setup() -> Result<(), i32> {
+pub fn apic_setup() -> Result<(), VmplError> {
     log::info!("setup apic");
     let num_rt_entries = num_cpus::get_physical();
 
@@ -40,11 +42,11 @@ pub fn apic_setup() -> Result<(), i32> {
         APIC_ROUTING = alloc(layout) as *mut u32;
         if APIC_ROUTING.is_null() {
             log::error!("apic routing table allocation failed");
-            return Err(libc::ENOMEM);
+            return Err(VmplError::ApicSetupFailed(libc::ENOMEM));
         }
 
         NUM_RT_ENTRIES.store(num_rt_entries, Ordering::SeqCst);
-        std::ptr::write_bytes(APIC_ROUTING, -1, num_rt_entries);
+        std::ptr::write_bytes(APIC_ROUTING, 0, num_rt_entries);
         asm!("mfence", options(nomem, nostack));
     }
 

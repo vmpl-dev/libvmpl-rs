@@ -55,7 +55,6 @@ pub struct ProcmapEntry {
     major: u32,  // New field for device
     inode: u32,  // New field for inode
     path: Option<String>,
-    entry_type: VmplVmaType,
 }
 
 impl ProcmapEntry {
@@ -71,7 +70,6 @@ impl ProcmapEntry {
         major: u32,
         inode: u32,
         path: Option<String>,
-        entry_type: VmplVmaType,
     ) -> Self {
         Self {
             begin,
@@ -85,7 +83,6 @@ impl ProcmapEntry {
             major,
             inode,
             path,
-            entry_type,
         }
     }
 }
@@ -103,8 +100,7 @@ impl From <(u64, u64, u32, bool, bool, bool, bool, u32, u32, u32, Option<String>
             minor: entry.7,
             major: entry.8,
             inode: entry.9,
-            path: entry.10,
-            entry_type: entry.11,
+            path: entry.11,
         }
     }
 }
@@ -138,6 +134,7 @@ fn get_vmpl_vma_type(path: &str) -> VmplVmaType {
 
 type ProcmapsCallback = fn(&ProcmapEntry, &mut ());
 
+#[cfg(feature = "vm")]
 fn parse_procmaps(callback: ProcmapsCallback, arg: &mut ()) -> Result<(), std::io::Error> {
     let file = File::open("/proc/self/maps")?;
     let reader = BufReader::new(file);
@@ -157,7 +154,6 @@ fn parse_procmaps(callback: ProcmapsCallback, arg: &mut ()) -> Result<(), std::i
             major: 0,
             inode: 0,
             path: None,
-            entry_type: VmplVmaType::Unknown,
         };
         use scan_fmt::scan_fmt;
 
@@ -171,8 +167,8 @@ fn parse_procmaps(callback: ProcmapsCallback, arg: &mut ()) -> Result<(), std::i
         let mut offset: u32;
         let mut minor: u32;
 
-        if let Ok(value) = scan_fmt!(&line, "{x}-{x} {}{}{}{} {x} {:x}:{:x} {} {}",
-            u64, u64, char, char, char, char, u32, u32, u32, u32, String) {
+        let value= scan_fmt!(&line, "{x}-{x} {}{}{}{} {x} {:x}:{:x} {} {}", begin, end, read, write, execute, private, offset, minor, major, inode, path);
+        if let Some(value) = value {
             callback(&ProcmapEntry::from(value), arg);
         }
     }
@@ -194,6 +190,8 @@ pub struct VmplVma {
 }
 
 use std::fmt;
+
+use libc::{PROT_EXEC, PROT_READ, PROT_WRITE};
 
 impl VmplVma {
     pub fn new(start: u64, end: u64, flags: u64, prot: u64, offset: u32) -> Self {

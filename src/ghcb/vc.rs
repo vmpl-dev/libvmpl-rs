@@ -11,12 +11,12 @@ use crate::*;
 
 use std::arch::asm;
 use std::mem::size_of;
-use libc::MAP_FIXED;
-use libc::MAP_SHARED;
-use libc::PROT_READ;
-use libc::PROT_WRITE;
+use libc::memset;
 use x86_64::addr::PhysAddr;
 use x86_64::addr::VirtAddr;
+use x86_64::instructions::hlt;
+use x86_64::registers::control::Cr2;
+use x86_64::registers::model_specific::Msr;
 use x86_64::structures::idt::*;
 use x86_64::structures::paging::frame::PhysFrame;
 
@@ -28,6 +28,8 @@ use x86_64::registers::control::Cr4Flags;
 use x86_64::registers::xcontrol::XCr0;
 
 use self::mm::mem_allocate_frames;
+use self::mm::mem_free_frames;
+use self::mm::pgtable_make_pages_private;
 use self::mm::pgtable_make_pages_shared;
 use self::mm::pgtable_pa_to_va;
 use self::mm::pgtable_va_to_pa;
@@ -35,9 +37,12 @@ use self::mm::PAGE_2MB_SIZE;
 use self::mm::PAGE_SIZE;
 use self::sys::ioctl::vmpl_ioctl::VmplFile;
 
+use super::ghcb::GHCB_USAGE;
+use super::ghcb::GHCB_VERSION_1;
 use super::globals::*;
 use super::ghcb::get_early_ghcb;
 use super::ghcb::SHARED_BUFFER_SIZE;
+use super::vmsa::Vmsa;
 use super::Ghcb;
 
 /// 2
@@ -160,11 +165,12 @@ pub fn vc_terminate(reason_set: u64, reason_code: u64) -> ! {
     value |= reason_set << 12;
     value |= reason_code << 16;
 
-    wrmsr(MSR_GHCB, value);
+    let mut msr = Msr::new(MSR_GHCB);
+    unsafe { msr.write(value) };
     vc_vmgexit();
 
     loop {
-        halt()
+        hlt();
     }
 }
 
@@ -253,32 +259,29 @@ pub fn vc_terminate_svsm_incorrect_vmpl() -> ! {
 }
 
 fn vc_msr_protocol(request: u64) -> u64 {
-    let response: u64;
+    unsafe { 
+        let response: u64;
 
-    // Save the current GHCB MSR value
-    let value: u64 = rdmsr(MSR_GHCB);
+        // Create a new MSR object for the GHCB MSR
+        let mut msr = Msr::new(MSR_GHCB);
 
-    // Perform the MSR protocol
-    wrmsr(MSR_GHCB, request);
-    vc_vmgexit();
-    response = rdmsr(MSR_GHCB);
+        // Save the current GHCB MSR value
+        let value = msr.read();
 
-    // Restore the GHCB MSR value
-    wrmsr(MSR_GHCB, value);
+        // Perform the MSR protocol
+        msr.write(request) ;
 
-    response
-}
+        // Perform the VMGEXIT
+        vc_vmgexit();
 
-pub extern "x86-interrupt" fn vc_handler(stack_frame: InterruptStackFrame, error_code: u64) {
-    let rip: u64 = stack_frame.instruction_pointer.as_u64();
-    let cr2: u64 = read_cr2();
+        // Read the response
+        response = msr.read();
 
-    prints!(
-        "Unhandled #VC exception: {:#x}\n{:#?}\nRIP={rip:#x}, CR2={cr2:#x}\n",
-        error_code,
-        stack_frame
-    );
-    vc_terminate_unhandled_vc();
+        // Restore the GHCB MSR value
+        msr.write(value);
+
+        response
+    }
 }
 
 fn vc_establish_protocol() {
@@ -362,176 +365,6 @@ pub fn vc_run_vmpl(vmpl: VMPL) {
     }
 }
 
-pub fn vc_ap_create(vmsa_va: VirtAddr, apic_id: u32) {
-    let ghcb: *mut Ghcb = vc_get_ghcb();
-    let vmsa: *const Vmsa = vmsa_va.as_u64() as *const Vmsa;
-
-    unsafe {
-        let info1: u64 =
-            GHCB_NAE_SNP_AP_CREATION_REQ!(SNP_AP_CREATE_IMMEDIATE, (*vmsa).vmpl(), apic_id);
-        let info2: u64 = pgtable_va_to_pa(vmsa_va).as_u64();
-
-        (*ghcb).set_rax((*vmsa).sev_features());
-
-        vc_perform_vmgexit(ghcb, GHCB_NAE_SNP_AP_CREATION, info1, info2);
-
-        (*ghcb).clear();
-    }
-}
-
-pub fn vc_get_apic_ids(bsp_apic_id: u32) -> Vec<u32> {
-    let mut apic_ids: Vec<u32>;
-    let ghcb: *mut Ghcb = vc_get_ghcb();
-    let pages: u64;
-
-    unsafe {
-        (*ghcb).set_rax(0);
-
-        vc_perform_vmgexit(ghcb, GHCB_NAE_GET_APIC_IDS, 0, 0);
-
-        if !(*ghcb).is_rax_valid() {
-            vc_terminate_svsm_resp_invalid();
-        }
-
-        pages = (*ghcb).rax();
-
-        (*ghcb).clear();
-    }
-
-    let frame: PhysFrame = match mem_allocate_frames(pages) {
-        Some(f) => f,
-        None => vc_terminate_svsm_enomem(),
-    };
-    let pa: PhysAddr = frame.start_address();
-    let va: VirtAddr = pgtable_pa_to_va(pa);
-
-    pgtable_make_pages_shared(va, pages * PAGE_SIZE);
-    memset(va.as_mut_ptr(), 0, (pages * PAGE_SIZE) as usize);
-
-    unsafe {
-        (*ghcb).set_rax(pages);
-
-        vc_perform_vmgexit(ghcb, GHCB_NAE_GET_APIC_IDS, pa.as_u64(), 0);
-
-        if !(*ghcb).is_rax_valid() {
-            vc_terminate_svsm_resp_invalid();
-        }
-
-        if (*ghcb).rax() != pages {
-            vc_terminate_svsm_resp_invalid();
-        }
-
-        (*ghcb).clear();
-
-        let count: *const u32 = va.as_u64() as *const u32;
-
-        if *count == 0 || *count > 4096 {
-            vc_terminate_svsm_resp_invalid();
-        }
-
-        apic_ids = Vec::with_capacity(*count as usize);
-
-        // BSP is always CPU 0
-        apic_ids.push(bsp_apic_id);
-        for i in 0..*count {
-            let id: *const u32 = (va.as_u64() + 4 + (i as u64 * 4)) as *const u32;
-            if *id != bsp_apic_id {
-                apic_ids.push(*id);
-            }
-        }
-
-        // Ensure the BSP APIC ID was present
-        assert_eq!(apic_ids.len(), *count as usize);
-    }
-
-    pgtable_make_pages_private(va, pages * PAGE_SIZE);
-    mem_free_frames(frame, pages);
-
-    apic_ids
-}
-
-fn cpuid_calc_xsave_size(features: u64, compact: bool) -> u32 {
-    let mut features_found: u64 = 0;
-    let mut xsave_size: u32 = 0;
-
-    unsafe {
-        let cpuid_page: *mut CpuidPage = get_svsm_cpuid_page().as_mut_ptr() as *mut CpuidPage;
-
-        let count: usize = min(CPUID_COUNT_MAX, (*cpuid_page).count() as usize);
-        for i in 0..count {
-            let cpuid_entry: CpuidPageEntry = (*cpuid_page).entry(i);
-
-            if cpuid_entry.eax_in() != 0x0000000d {
-                continue;
-            }
-
-            if cpuid_entry.ecx_in() <= 1 || cpuid_entry.ecx_in() >= 64 {
-                continue;
-            }
-
-            let feature = BIT!(cpuid_entry.ecx_in());
-
-            // Must be a feature that is being requested
-            if (features & feature) == 0 {
-                continue;
-            }
-
-            // Don't process duplicate entries
-            if (features_found & feature) != 0 {
-                continue;
-            }
-
-            features_found |= feature;
-
-            if compact {
-                xsave_size += cpuid_entry.eax();
-            } else {
-                xsave_size = max(xsave_size, cpuid_entry.eax() + cpuid_entry.ebx());
-            }
-        }
-
-        if features_found != (features & !3) {
-            xsave_size = 0;
-        }
-    }
-
-    xsave_size
-}
-
-fn cpuid_find_entry(leaf: u32, subleaf: u32) -> Option<CpuidPageEntry> {
-    let subleaf_used: bool = cpuid_is_subleaf_used(leaf);
-
-    unsafe {
-        let cpuid_page: *mut CpuidPage = get_svsm_cpuid_page().as_mut_ptr() as *mut CpuidPage;
-
-        let count: usize = min(CPUID_COUNT_MAX, (*cpuid_page).count() as usize);
-        for i in 0..count {
-            let cpuid_entry: CpuidPageEntry = (*cpuid_page).entry(i);
-            if leaf == cpuid_entry.eax_in() {
-                if !subleaf_used || subleaf == cpuid_entry.ecx_in() {
-                    return Some(cpuid_entry);
-                }
-            }
-        }
-    }
-
-    return None;
-}
-
-fn cpuid_is_subleaf_used(leaf: u32) -> bool {
-    match leaf {
-        0x00000007 => true,
-        0x0000000b => true,
-        0x0000000d => true,
-        0x0000000f => true,
-        0x00000010 => true,
-        0x8000001d => true,
-        0x80000020 => true,
-
-        _ => false,
-    }
-}
-
 fn vc_cpuid_vmgexit(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
     let ghcb: *mut Ghcb = vc_get_ghcb();
     let eax: u32;
@@ -566,91 +399,6 @@ fn vc_cpuid_vmgexit(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
         edx = (*ghcb).rdx() as u32;
 
         (*ghcb).clear();
-    }
-
-    (eax, ebx, ecx, edx)
-}
-
-pub fn vc_cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
-    let cpuid_entry: CpuidPageEntry = match cpuid_find_entry(leaf, subleaf) {
-        Some(e) => e,
-        None => return (0, 0, 0, 0),
-    };
-
-    let mut eax: u32 = cpuid_entry.eax();
-    let mut ebx: u32 = cpuid_entry.ebx();
-    let mut ecx: u32 = cpuid_entry.ecx();
-    let mut edx: u32 = cpuid_entry.edx();
-
-    match leaf {
-        0x00000001 => {
-            let (_, b, _, _) = vc_cpuid_vmgexit(leaf, subleaf);
-
-            // Use hypervisor supplied APIC ID
-            ebx &= 0x00ffffff;
-            ebx |= b & 0xff000000;
-
-            // Set CPUID_ECX[OSXSAVE] to CR4[OSXSAVE]
-            if Cr4::read().contains(Cr4Flags::OSXSAVE) {
-                ecx |= BIT!(27);
-            } else {
-                ecx &= !BIT!(27);
-            }
-        }
-        0x00000007 => {
-            // Set CPUID_ECX[OSPKE] to CR4[PKE]
-            if Cr4::read().contains(Cr4Flags::PROTECTION_KEY_USER) {
-                ecx |= BIT!(4);
-            } else {
-                ecx &= !BIT!(4);
-            }
-        }
-        0x0000000b => {
-            let (_, _, _, d) = vc_cpuid_vmgexit(leaf, subleaf);
-
-            // Use hypervisor supplied extended APIC ID
-            edx = d;
-        }
-        0x0000000d => {
-            if subleaf == 0 || subleaf == 1 {
-                let compact: bool;
-                let xcr0: u64;
-                let xss: u64;
-
-                if Cr4::read().contains(Cr4Flags::OSXSAVE) {
-                    xcr0 = XCr0::read_raw();
-                } else {
-                    xcr0 = 1;
-                }
-
-                if subleaf == 1 {
-                    compact = true;
-
-                    if (eax & BIT!(3)) != 0 {
-                        xss = rdmsr(0x00000da0);
-                    } else {
-                        xss = 0;
-                    }
-                } else {
-                    compact = false;
-
-                    xss = 0;
-                }
-
-                ebx = cpuid_calc_xsave_size(xcr0 | xss, compact);
-            }
-        }
-        0x8000001e => {
-            let (a, b, c, _) = vc_cpuid_vmgexit(leaf, subleaf);
-
-            // Use hypervisor supplied extended APIC ID
-            eax = a;
-
-            // Use hypervisor supplied topology information
-            ebx = b;
-            ecx = c;
-        }
-        _ => {}
     }
 
     (eax, ebx, ecx, edx)
@@ -795,7 +543,8 @@ pub fn vc_register_ghcb(pa: PhysAddr) {
         vc_terminate_svsm_general();
     }
 
-    wrmsr(MSR_GHCB, pa.as_u64());
+    let mut msr = Msr::new(MSR_GHCB);
+    unsafe { msr.write(pa.as_u64()) };
 }
 
 const PSC_SHARED: u64 = 2 << 52;
@@ -858,152 +607,13 @@ impl PscOp {
     funcs!(entries, [PscOpData; PSC_ENTRIES]);
 }
 
-macro_rules! GHCB_2MB_PSC_ENTRY {
-    ($x: expr, $y: expr) => {
-        ((($x) | ($y) | (1 << 56)) as u64)
-    };
-}
-
-macro_rules! GHCB_4KB_PSC_ENTRY {
-    ($x: expr, $y: expr) => {
-        ((($x) | ($y)) as u64)
-    };
-}
-
-macro_rules! GHCB_PSC_GPA {
-    ($x: expr) => {
-        ((($x) & ((1 << 52) - 1)) as u64)
-    };
-}
-
-macro_rules! GHCB_PSC_SIZE {
-    ($x: expr) => {
-        (((($x) >> 56) & 1) as u32)
-    };
-}
-
-fn pvalidate_psc_entries(op: &mut PscOp, pvalidate_op: u32) {
-    let first_entry: usize = op.header.cur_entry as usize;
-    let last_entry: usize = op.header.end_entry as usize + 1;
-
-    for i in first_entry..last_entry {
-        let gpa: u64 = GHCB_PSC_GPA!(op.entries[i].data);
-        let size: u32 = GHCB_PSC_SIZE!(op.entries[i].data);
-
-        let mut va: VirtAddr = pgtable_pa_to_va(PhysAddr::new(gpa));
-        let mut ret: u32 = pvalidate(va.as_u64(), size, pvalidate_op);
-        if ret == PVALIDATE_FAIL_SIZE_MISMATCH && size > 0 {
-            let va_end = va + PAGE_2MB_SIZE;
-
-            while va < va_end {
-                ret = pvalidate(va.as_u64(), 0, pvalidate_op);
-                if ret != 0 {
-                    break;
-                }
-
-                va += PAGE_SIZE;
-            }
-        }
-
-        if ret != 0 {
-            vc_terminate_svsm_psc();
-        }
-    }
-}
-
-fn build_psc_entries(op: &mut PscOp, begin: PhysAddr, end: PhysAddr, page_op: u64) -> PhysAddr {
-    let mut pa: PhysAddr = begin;
-    let mut i: usize = 0;
-
-    while pa < end && i < PSC_ENTRIES {
-        if pa.is_aligned(PAGE_2MB_SIZE) && (end - pa) >= PAGE_2MB_SIZE {
-            op.entries[i].data = GHCB_2MB_PSC_ENTRY!(pa.as_u64(), page_op);
-            pa += PAGE_2MB_SIZE;
-        } else {
-            op.entries[i].data = GHCB_4KB_PSC_ENTRY!(pa.as_u64(), page_op);
-            pa += PAGE_SIZE;
-        }
-        op.header.end_entry = i as u16;
-
-        i += 1;
-    }
-
-    return pa;
-}
-
-fn perform_page_state_change(ghcb: *mut Ghcb, begin: PhysFrame, end: PhysFrame, page_op: u64) {
-    let mut op: PscOp = PscOp::new();
-
-    let mut pa: PhysAddr = begin.start_address();
-    let pa_end: PhysAddr = end.start_address();
-
-    while pa < pa_end {
-        op.header.cur_entry = 0;
-        pa = build_psc_entries(&mut op, pa, pa_end, page_op);
-
-        let last_entry: u16 = op.header.end_entry;
-
-        if page_op == PSC_SHARED {
-            pvalidate_psc_entries(&mut op, RESCIND);
-        }
-
-        let size: usize =
-            size_of::<PscOpHeader>() + size_of::<PscOpData>() * (last_entry as usize + 1);
-        unsafe {
-            let set_bytes: *const u8 = &op as *const PscOp as *const u8;
-            let get_bytes: *mut u8 = &mut op as *mut PscOp as *mut u8;
-
-            (*ghcb).clear();
-
-            (*ghcb).set_shared_buffer(set_bytes, size);
-
-            while op.header.cur_entry <= last_entry {
-                vc_perform_vmgexit(ghcb, GHCB_NAE_PSC, 0, 0);
-                if !(*ghcb).is_sw_exit_info_2_valid() || (*ghcb).sw_exit_info_2() != 0 {
-                    vc_terminate_svsm_psc();
-                }
-
-                (*ghcb).shared_buffer(get_bytes, size);
-            }
-        }
-
-        if page_op == PSC_PRIVATE {
-            op.header.cur_entry = 0;
-            op.header.end_entry = last_entry;
-            pvalidate_psc_entries(&mut op, VALIDATE);
-        }
-    }
-}
-
-pub fn vc_make_pages_shared(begin: PhysFrame, end: PhysFrame) {
-    let ghcb: *mut Ghcb = vc_get_ghcb();
-    perform_page_state_change(ghcb, begin, end, PSC_SHARED)
-}
-
-pub fn vc_make_page_shared(frame: PhysFrame) {
-    vc_make_pages_shared(frame, frame + 1)
-}
-
-pub fn vc_make_pages_private(begin: PhysFrame, end: PhysFrame) {
-    let ghcb: *mut Ghcb = vc_get_ghcb();
-    perform_page_state_change(ghcb, begin, end, PSC_PRIVATE)
-}
-
-pub fn vc_make_page_private(frame: PhysFrame) {
-    vc_make_pages_private(frame, frame + 1)
-}
-
-pub fn vc_early_make_pages_private(begin: PhysFrame, end: PhysFrame) {
-    let ghcb: *mut Ghcb = get_early_ghcb().as_mut_ptr() as *mut Ghcb;
-
-    perform_page_state_change(ghcb, begin, end, PSC_PRIVATE);
-}
-
-pub fn vc_init(fd: VmplFile) {
+pub fn vc_init(fd: VmplFile) -> VirtAddr {
     let ghcb_pa: PhysAddr = pgtable_va_to_pa(get_early_ghcb());
 
     vc_establish_protocol();
     vc_register_ghcb(ghcb_pa);
+
+    get_early_ghcb()
 }
 
 #[cfg(feature = "ghcb")]

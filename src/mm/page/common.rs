@@ -8,6 +8,7 @@ use libc::{mmap, MAP_FAILED, PROT_READ, PROT_WRITE, MAP_SHARED};
 use x86_64::PhysAddr;
 
 use crate::mm::pgtable::{PGSIZE, PGTABLE_MMAP_BASE};
+use lazy_static::lazy_static;
 
 use crate::mm::page::vmpl::*;
 use crate::mm::page::dune::*;
@@ -20,13 +21,24 @@ pub const PAGE_FLAG_MAPPED: u64 = 1 << 1;
 #[repr(C, packed)]
 #[derive(Debug)]
 pub struct Page {
-    link: Box<dyn Page>,
+    link: Option<Box<Page>>,
     ref_count: AtomicU64,
     flags: AtomicU64,
     vmpl: AtomicU64,
 }
 
-pub static mut PAGES: Option<NonNull<Page>> = None;
+lazy_static! {
+    pub static ref PAGES: [Page; MAX_PAGES] = {
+        let mut pages = [Page {
+            link: None,
+            ref_count: AtomicU64::new(0),
+            flags: AtomicU64::new(0),
+            vmpl: AtomicU64::new(0),
+        }; MAX_PAGES];
+        pages
+    };
+}
+
 pub static mut NUM_DUNE_PAGES: i32 = 0;
 pub static mut NUM_VMPL_PAGES: i32 = 0;
 
@@ -75,8 +87,18 @@ pub fn put_page(pg: &mut Page) {
     pg.ref_count.fetch_sub(1, Ordering::SeqCst);
 }
 
+#[cfg(not(feature = "vm"))]
+pub fn page_init(fd: i32) -> Result<(), i32> {
+    unsafe {
+        PAGES = Some(NonNull::new(
+            libc::malloc(mem::size_of::<Page>() * MAX_PAGES) as *mut Page
+        ).ok_or(libc::ENOMEM)?);
+    }
 
+    Ok(())
+}
 
+#[cfg(feature = "vm")]
 pub fn page_init(fd: i32) -> Result<(), i32> {
     unsafe {
         PAGES = Some(NonNull::new(
@@ -95,11 +117,20 @@ pub fn page_init(fd: i32) -> Result<(), i32> {
     Ok(())
 }
 
-pub fn page_exit() -> i32 {
+#[cfg(not(feature = "vm"))]
+pub fn page_exit() {
     unsafe {
         libc::free(PAGES.unwrap().as_ptr() as *mut libc::c_void);
     }
-    0
+}
+
+#[cfg(feature = "vm")]
+pub fn page_exit() {
+    unsafe {
+        libc::free(PAGES.unwrap().as_ptr() as *mut libc::c_void);
+        vmpl_page_exit();
+        dune_page_exit();
+    }
 }
 
 pub fn page_stats() {
@@ -108,7 +139,8 @@ pub fn page_stats() {
     dune_page_stats();
 }
 
-#[cfg(feature = "test")]
+#[test]
+#[cfg(feature = "vm")]
 pub fn page_test(vmpl_fd: i32) {
     log::info!("Page Test");
     unsafe {

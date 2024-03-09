@@ -1,58 +1,38 @@
 extern crate nix;
 
-use libc::{getrlimit, rlimit, setrlimit, RLIMIT_DATA, RLIMIT_STACK};
-use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+use std::fs::OpenOptions;
+use std::mem::transmute;
+
+#[cfg(feature = "dune")]
+use std::{mem, process, ptr};
+#[cfg(feature = "dune")]
 use libc::{sched_getaffinity, sched_setaffinity, CPU_ISSET, CPU_SET, CPU_SETSIZE, CPU_ZERO};
 use libc::{signal, SIG_ERR};
-use libc::{SIGCHLD, SIGINT, SIGKILL, SIGSTOP, SIGTERM, SIGTSTP};
 use log::{error, info};
-use nix::errno::Errno;
-use nix::libc;
-use nix::sys::signal::Signal;
-use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet};
-use nix::Error;
-use num_cpus;
-use std::arch::asm;
-use std::fs::OpenOptions;
-use std::mem;
-use std::mem::{size_of, transmute};
-use std::os::unix::io::AsRawFd;
-use std::process;
-use std::ptr;
 
-use crate::start::dune::__dune_vsyscall_page;
-use crate::start::dune::{DuneConfig, DunePerCpu, DUNE_FD, DUNE_SIGNAL_INTR_BASE};
-use crate::start::dune::{__dune_enter, __dune_go_dune, __dune_ret};
-use crate::start::dune::{__dune_go_linux, __dune_intr, __dune_syscall};
-use crate::start::dune::{dune_debug_handle_int, wrmsrl, MSR_FS_BASE, MSR_GS_BASE};
-use crate::start::dune::{DUNE_RET_EXIT, DUNE_RET_INTERRUPT, DUNE_RET_NOENTER, DUNE_RET_SIGNAL};
+use crate::globals::{DUNE_SIGNAL_INTR_BASE, RUN_VMPL_DEV_NAME};
+use crate::mm::mm_init;
+use crate::start::dune::{__dune_enter, __dune_ret};
+use crate::start::dune_register_intr_handler;
 use crate::sys::apic::{apic_cleanup, apic_setup};
-use crate::sys::core::{Base, Selector, VmplSegs, VmsaConfig};
-use crate::sys::ioctl::{vmpl_ioctl_set_segs, vmpl_ioctl_set_syscall};
-use crate::sys::percpu::{PerCpu, GD_TSS, IDT};
-use crate::sys::vc::vc_init;
+use crate::sys::core::DuneConfig;
 
-use crate::sys::fpu::{xsave_begin, xsave_end};
-use crate::sys::ghcb::Ghcb;
-use crate::sys::idt::setup_idt;
-use crate::sys::mm::{setup_mm, vmpl_mm, vmpl_mm_exit, vmpl_mm_stats, vmpl_mm_test};
-use crate::sys::percpu::{dump_configs, setup_gdt, vmpl_alloc_percpu, vmpl_free_percpu};
-use crate::sys::seimi::setup_seimi;
-use crate::sys::signal::setup_signal;
-use crate::sys::syscall::setup_syscall;
-use crate::sys::vsyscall::setup_vsyscall;
-use crate::sys::DunePerCpu;
+use crate::error::VmplError;
+use crate::sys::idt::idt_init;
+use crate::sys::signal::signal_init;
+use crate::sys::syscall::{setup_syscall, setup_vsyscall};
+use crate::sys::{seimi_init, DunePerCpu};
 
 // declare global variables
 static mut CURRENT_CPU: i32 = 0;
 static mut CPU_COUNT: i32 = 0;
 static mut VMPL_BOOTED: bool = false;
 // define percpu variable for VMPL
-static mut PERCPU: Option<Box<PerCpu>> = None;
+static mut PERCPU: Option<Box<DunePerCpu>> = None;
 
 struct VmplSystem {
     dune_fd: i32,
-    percpu: Option<Box<PerCpu>>,
+    percpu: Option<Box<DunePerCpu>>,
 }
 
 impl VmplSystem {
@@ -77,18 +57,8 @@ impl Drop for VmplSystem {
     }
 }
 
-// fn vmpl_build_assert() {
-//     assert!(size_of::<Base>() == 16);
-//     assert!(size_of::<Selector>() == 8);
-//     assert!(size_of::<VmplSegs>() == 16);
-//     assert!(size_of::<VmsaConfig>() == 64);
-//     assert!(size_of::<DuneConfig>() == 64);
-//     assert!(size_of::<DunePerCpu>() == 64);
-//     assert!(size_of::<Ghcb>() == 64);
-//     assert!(size_of::<PerCpu>() == 64);
-// }
-
 impl VmplSystem {
+    #[cfg(feature = "dune")]
     fn get_cpu_count() -> i32 {
         info!("get cpu count");
         let nprocs = num_cpus::get() as i32;
@@ -100,6 +70,7 @@ impl VmplSystem {
         nprocs
     }
 
+    #[cfg(feature = "dune")]
     fn alloc_cpu() -> i32 {
         info!("alloc cpu");
         unsafe {
@@ -111,17 +82,23 @@ impl VmplSystem {
                 }
             }
             if CPU_COUNT == 0 {
-                CPU_COUNT = get_cpu_count();
+                CPU_COUNT = VmplSystem::get_cpu_count();
                 assert!(CPU_COUNT > 0);
             }
             CURRENT_CPU = (CURRENT_CPU + 1) % CPU_COUNT;
         }
         unsafe { CURRENT_CPU }
     }
+
+    #[cfg(not(feature = "dune"))]
+    fn setup_cpuset() -> VmplError {
+        todo!("setup cpuset")
+    }
+
     #[cfg(feature = "dune")]
     fn setup_cpuset() -> i32 {
         info!("setup cpuset");
-        let cpu = alloc_cpu();
+        let cpu = self.alloc_cpu();
         let mut cpuset: libc::cpu_set_t = unsafe { mem::zeroed() };
         unsafe {
             CPU_ZERO(&mut cpuset);
@@ -144,70 +121,34 @@ impl VmplSystem {
             return Err(-1);
         }
 
-        dune_register_intr_handler(DUNE_SIGNAL_INTR_BASE + sig as u64, x);
+        unsafe { dune_register_intr_handler(DUNE_SIGNAL_INTR_BASE + sig as u64, x) };
 
         Ok(())
     }
 
-    fn init(&self, map_full: bool) -> Result<(), i32> {
+    fn init(&self, map_full: bool) -> Result<(), VmplError> {
         info!("vmpl_init");
 
         let dune_fd = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(RUN_VMPL_DEV_NAME);
+            .open(RUN_VMPL_DEV_NAME)?;
 
-        let dune_fd = match dune_fd {
-            Ok(fd) => fd,
-            Err(_) => {
-                error!("Failed to open {}", RUN_VMPL_DEV_NAME);
-                return Err(libc::errno());
-            }
-        };
-
-        if let Err(rc) = setup_cpuset() {
-            error!("dune: unable to setup CPU set");
-            return Err(rc);
-        }
-
-        if let Err(rc) = setup_mm() {
-            error!("dune: unable to setup memory management");
-            return Err(rc);
-        }
-
-        if let Err(rc) = setup_seimi(dune_fd.as_raw_fd()) {
-            error!("dune: unable to setup SEIMI");
-            return Err(rc);
-        }
-
-        if let Err(rc) = setup_syscall() {
-            error!("dune: unable to setup syscall handler");
-            return Err(rc);
-        }
-
-        if map_full {
-            if let Err(rc) = setup_vsyscall() {
-                error!("dune: unable to setup vsyscall handler");
-                return Err(rc);
-            }
-        }
-
-        setup_signal();
-        setup_idt();
-
-        if let Err(rc) = apic_setup() {
-            error!("dune: failed to setup APIC");
-            apic_cleanup();
-            return Err(libc::ENOMEM);
-        }
+        mm_init(self.dune_fd)?;
+        seimi_init(dune_fd)?;
+        setup_syscall(dune_fd.as_raw_fd())?;
+        setup_vsyscall()?;
+        signal_init()?;
+        idt_init()?;
+        apic_setup()?;
 
         Ok(())
     }
 
     fn init_exit(&self) {
         info!("vmpl_init_exit");
-        vmpl_mm_exit(&mut vmpl_mm);
-        vmpl_free_percpu(percpu);
+        // mm_exit(&mut vmpl_mm);
+        // free_percpu(percpu);
         apic_cleanup();
     }
 
@@ -244,8 +185,8 @@ impl VmplSystem {
 
         self.build_assert();
 
-        let mut vmsa_config = VmsaConfig::new(&__dune_ret as *const _ as u64, 0, 0x202);
-        let conf = match Box::new(vmsa_config) {
+        let mut config = DuneConfig::new(&__dune_ret as *const _ as u64, 0, 0x202);
+        let conf = match Box::new(config) {
             Ok(conf) => conf,
             Err(rc) => {
                 error!("dune: failed to allocate config struct");
@@ -258,10 +199,10 @@ impl VmplSystem {
             return Err(rc);
         }
 
-        dump_configs(&*percpu);
+        // dump_configs(&*percpu);
 
         unsafe {
-            if let Err(rc) = __dune_enter(dune_fd, &*conf) {
+            if let Err(rc) = __dune_enter(self.dune_fd, &*conf) {
                 error!("dune: entry to Dune mode failed");
                 return Err(rc);
             }
@@ -271,49 +212,15 @@ impl VmplSystem {
 
         Ok(())
     }
-
-
-}
-
-fn on_dune_syscall(conf: &mut VmsaConfig) {
-    conf.rax = unsafe {
-        libc::syscall(
-            conf.status,
-            conf.rdi,
-            conf.rsi,
-            conf.rdx,
-            conf.r10,
-            conf.r8,
-            conf.r9,
-        )
-    };
-
-    unsafe {
-        __dune_go_dune(dune_fd, conf);
-    }
 }
 
 #[cfg(feature = "dune")]
 fn on_dune_exit(conf: &mut VmsaConfig) {
     match conf.ret {
-        DUNE_RET_EXIT => {
-            info!("on_dune_exit()");
-            unsafe { libc::syscall(libc::SYS_exit, conf.status) };
-        }
-        DUNE_RET_INTERRUPT => {
-            dune_debug_handle_int(conf);
-            error!("dune: exit due to interrupt {}", conf.status);
-        }
-        DUNE_RET_SIGNAL => {
-            info!("on_dune_exit()");
-            __dune_go_dune(dune_fd, conf);
-        }
-        DUNE_RET_NOENTER => {
-            error!(
-                "dune: re-entry to Dune mode failed, status is {}",
-                conf.status
-            );
-        }
+        DUNE_RET_EXIT => conf.on_dune_exit(),
+        DUNE_RET_INTERRUPT => conf.on_dune_interrupt(),
+        DUNE_RET_SIGNAL => conf.on_dune_signal(),
+        DUNE_RET_NOENTER => conf.on_dune_noenter(),
         _ => {
             error!(
                 "dune: unknown exit from Dune, ret={}, status={}",
@@ -327,32 +234,22 @@ fn on_dune_exit(conf: &mut VmsaConfig) {
 
 #[cfg(not(feature = "dune"))]
 #[no_mangle]
-fn on_dune_exit(conf: &mut VmsaConfig) {
-    match conf.ret {
-        DUNE_RET_EXIT => {
-            info!("on_dune_exit()");
-            unsafe { libc::syscall(libc::SYS_exit, conf.status) };
-        }
-        DUNE_RET_SYSCALL => {
-            on_dune_syscall(conf);
-        }
-        DUNE_RET_SIGNAL => {
-            info!("on_dune_exit()");
-            __dune_go_dune(dune_fd, conf);
-        }
-        DUNE_RET_NOENTER => {
-            error!(
-                "dune: re-entry to Dune mode failed, status is {}",
-                conf.status
-            );
-        }
+fn on_dune_exit(conf: &mut DuneConfig) {
+    use libc::exit;
+
+    match conf.ret() {
+        DUNE_RET_EXIT => conf.on_dune_exit(),
+        DUNE_RET_SYSCALL => conf.on_dune_syscall(),
+        DUNE_RET_SIGNAL => conf.on_dune_signal(),
+        DUNE_RET_NOENTER => conf.on_dune_noenter(),
         _ => {
             error!(
                 "dune: unknown exit from Dune, ret={}, status={}",
-                conf.ret, conf.status
+                conf.ret(),
+                conf.status()
             );
         }
     }
 
-    std::process::exit(libc::EXIT_FAILURE);
+    unsafe { exit(libc::EXIT_FAILURE) };
 }

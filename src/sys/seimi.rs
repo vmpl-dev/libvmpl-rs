@@ -16,7 +16,7 @@ const SEIMI_PGD_SUPER: u64 = 0x87654321; // Replace with actual value
 const SEIMI_MMAP_BASE_USER: *mut libc::c_void = 0x1000 as *mut _; // Replace with actual value
 const SEIMI_MMAP_BASE_SUPER: *mut libc::c_void = 0x2000 as *mut _; // Replace with actual value
 
-pub fn setup_seimi(dune_fd: &mut VmplFile) -> Result<(), Error> {
+pub fn seimi_init(dune_fd: &mut VmplFile) -> Result<(), Error> {
     info!("Setting up SEIMI");
     let mut seimi = SeimiParams::new(SEIMI_PGD_USER, SEIMI_PGD_SUPER);
     dune_fd.set_seimi(&mut seimi)?;

@@ -6,11 +6,10 @@
  *          Tom Lendacky <thomas.lendacky@amd.com>
  */
 
-use crate::sys::EFER_SVME;
+use crate::sys::{cmpxchg, EFER_SVME};
 use crate::ghcb::globals::PAGE_SIZE;
-use crate::globals::*;
 use crate::STATIC_ASSERT;
-use crate::{cmpxchg, funcs, BARRIER, BIT};
+use crate::{funcs, BARRIER, BIT};
 
 use core::mem::size_of;
 use memoffset::offset_of;

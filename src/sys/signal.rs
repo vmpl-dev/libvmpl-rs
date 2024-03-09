@@ -1,10 +1,11 @@
-use libc::{sigaction, SIGCHLD, SIGINT, SIGKILL, SIGSTOP, SIGTERM, SIGTSTP};
+use libc::sigaction;
 use log::info;
 use nix::errno::Errno;
-use nix::sys::signal::Signal;
-use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet};
+use nix::sys::signal::*;
 
-pub fn setup_signal() {
+use crate::error::VmplError;
+
+pub fn signal_init() -> Result<(), VmplError>{
     info!("setup signal");
 
     // disable signals for now until we have better support
@@ -28,4 +29,6 @@ pub fn setup_signal() {
             sigaction(signum, &act, &oldact);
         }
     }
+
+    Ok(())
 }

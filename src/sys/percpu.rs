@@ -1,4 +1,5 @@
 use libc::mmap;
+use libc::FS_BASE;
 use libc::MAP_ANONYMOUS;
 use libc::MAP_FAILED;
 use libc::MAP_PRIVATE;
@@ -6,7 +7,7 @@ use libc::PROT_READ;
 use libc::PROT_WRITE;
 use log::{error, info};
 use std::arch::asm;
-use std::ffi::os_str::Display;
+use std::fmt::Pointer;
 use std::mem;
 use std::mem::{offset_of, size_of};
 use std::os::raw::c_char;
@@ -34,11 +35,11 @@ const XSAVE_SIZE: usize = 4096;
 #[cfg(feature = "xsave")]
 const XCR_XFEATURE_ENABLED_MASK: u32 = 0x00000000;
 /// Global variable to indicate whether VMPL has been booted
-const VMPL_BOOTED: bool = $0;
+const VMPL_BOOTED: bool = false;
 
 #[repr(C)]
 pub struct DunePerCpu {
-    percpu_ptr: u64,
+    percpu_ptr: Box<DunePerCpu>,
     tmp: u64,
     kfs_base: u64,
     ufs_base: u64,
@@ -75,11 +76,13 @@ pub fn dune_set_user_fs(fs_base: u64) {
     }
 }
 
-use crate::globals::{GD_TSS};
+use crate::globals::GD_TSS;
+use std::fmt::Display;
 
 impl DunePerCpu {
 
     fn setup_gdt(&mut self) {
+        GDT.init();
         let mut gdt = [0; NR_GDT_ENTRIES];
         let tss = VmsaSeg::new(GD_TSS, 0x0089, mem::size_of_val(&self.tss), &mut self.tss);
         gdt[GD_TSS as usize] = tss.as_u64();
@@ -90,7 +93,7 @@ impl DunePerCpu {
         let fs = VmsaSeg::fs(self.kfs_base);
         let gs = VmsaSeg::gs(self as *mut _ as u64);
         let tr = VmsaSeg::new(GD_TSS, 0x0089,  mem::size_of_val(&self.tss), &mut self.tss);
-        let gdtr = VmsaSeg::new(0, 0, mem::size_of_val(&self.gdt) as usize - 1, &mut percpu.gdt as *mut _ as u64);
+        let gdtr = VmsaSeg::new(0, 0, mem::size_of_val(&self.gdt) as usize - 1, &mut self.gdt as *mut _ as u64);
         let idtr = VmsaSeg::new(0, 0, mem::size_of_val(&IDT) - 1, &IDT as *const _ as u64);
         let segs = VmplSegs::new(fs, gs, gdtr, idtr, tr);
         let mut segs = Box::new(segs);
@@ -133,7 +136,7 @@ impl DunePerCpu {
         Ok(())
     }
 
-    pub fn alloc() -> Result<Box<DunePerCpu>, VmplError> {
+    pub fn alloc(&mut self) -> Result<Box<DunePerCpu>, VmplError> {
         info!("vmpl_alloc_percpu");
 
         let fs_base: u64;
@@ -177,10 +180,13 @@ impl DunePerCpu {
             (*percpu).ghcb = std::ptr::null_mut();
         }
 
-        if self.setup_safe_stack().is_err() {
-            error!("dune: failed to setup safe stack");
-            unsafe { libc::munmap(percpu as *mut _, PGSIZE) };
-            return Err(VmplError::Sys(libc::ENOMEM));
+        match self.setup_safe_stack() {
+            Ok(_) => {}
+            Err(rc) => {
+                error!("dune: failed to setup safe stack");
+                unsafe { libc::munmap(percpu as *mut _, PGSIZE) };
+                return Err(rc);
+            }
         }
 
         Ok(unsafe { Box::from_raw(percpu) })
@@ -337,7 +343,7 @@ impl DunePerCpu {
         Ok(())
     }
 
-    pub fn post_init(&mut self) -> Result<(), i32> {
+    pub fn post_init(&mut self, dune_fd: VmplFile) -> Result<(), VmplError> {
         info!("vmpl_init_post");
 
         self.in_usermode = 0;
@@ -346,12 +352,16 @@ impl DunePerCpu {
 
         serial_init();
 
+        // write fsbase and gsbase use x86_64
+        x86_64::instructions::segmentation::FS;
+
+
         VMPL_BOOTED = true;
 
         self.dune_boot()?;
-        self.init_test();
-        self.init_banner();
-        self.init_stats();
+        // self.init_test();
+        // self.init_banner();
+        // self.init_stats();
         Ok(())
     }
 }
@@ -359,14 +369,14 @@ impl DunePerCpu {
 impl Display for DunePerCpu {
     #[cfg(not(feature = "debug"))]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DunePerCpu\n");
-        write!(f, "PerCpu Entry:\n");
-        write!(f, "percpu_ptr: %lx\n", self.percpu_ptr);
-        write!(f, "kfs_base: %lx ufs_base: %lx\n", self.kfs_base, self.ufs_base);
-        write!(f, "in_usermode: %lx", self.in_usermode);
-        write!(f, "tss: %p gdt: %p", &self.tss, self.gdt);
-        write!(f, "ghcb: %p", self.ghcb);
-        write!(f, "lstar: %p vsyscall: %p", self.lstar, self.vsyscall);
+        write!(f, "DunePerCpu\n")?;
+        write!(f, "PerCpu Entry:\n")?;
+        write!(f, "percpu_ptr: {:p}\n", self.percpu_ptr)?;
+        write!(f, "kfs_base: {:#x} ufs_base: {:#x}\n", self.kfs_base, self.ufs_base)?;
+        write!(f, "in_usermode: {}\n", self.in_usermode)?;
+        write!(f, "tss: {:p} gdt: {:p}", &self.tss, self.gdt)?;
+        write!(f, "ghcb: {:p}", self.ghcb)?;
+        write!(f, "lstar: {:p} vsyscall: {:p}", self.lstar, self.vsyscall)?;
         f.write_str("\n")
     }
 

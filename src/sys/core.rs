@@ -3,6 +3,10 @@
 
 use std::fmt::Display;
 
+use log::error;
+
+use crate::{funcs, start::__dune_go_dune};
+
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct VmplParam {
@@ -46,7 +50,7 @@ impl VmplLayout {
 // vmpl-core.c
 
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug, Copy, Clone, Default)]
 pub struct VmsaSeg {
     selector: u16,
     attrib: u16,
@@ -118,11 +122,22 @@ impl VmplSegs {
             tr: tr,
         }
     }
+
+    funcs!(fs, VmsaSeg);
+    funcs!(gs, VmsaSeg);
+    funcs!(gdtr, VmsaSeg);
+    funcs!(idtr, VmsaSeg);
+    funcs!(tr, VmsaSeg);
 }
 
 impl Display for VmplSegs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "fs: {}, gs: {}, gdtr: {}, idtr: {}, tr: {}", self.fs, self.gs, self.gdtr, self.idtr, self.tr)
+        let fs = self.fs;
+        let gs = self.gs;
+        let gdtr = self.gdtr;
+        let idtr = self.idtr;
+        let tr = self.tr;
+        write!(f, "fs: {}, gs: {}, gdtr: {}, idtr: {}, tr: {}", fs, gs, gdtr, idtr, tr)
     }
 }
 
@@ -181,6 +196,50 @@ impl DuneConfig {
             vcpu: 0,
         }
     }
+
+    pub fn on_dune_exit(&self) {
+        unsafe { libc::syscall(libc::SYS_exit, self.status) };
+    }
+
+    pub fn on_dune_interrupt(&self) {
+        error!("dune: exit due to interrupt {}", self.status);
+    }
+
+    pub fn on_dune_syscall(&self) {
+        self.rax = unsafe {
+            libc::syscall(self.status,self.rdi,self.rsi,self.rdx,self.r10,self.r8,self.r9);
+        };
+
+        unsafe {
+            __dune_go_dune(dune_fd, self);
+        }
+    }
+
+    pub fn on_dune_signal(&self) {
+        unsafe { __dune_go_dune(dune_fd, &self) };
+    }
+
+    pub fn on_dune_noenter(&self) {
+        error!(
+            "dune: re-entry to Dune mode failed, status is {}",
+            self.status
+        );
+    }
+
+    funcs!(ret, i64);
+    funcs!(status, i64);
+    funcs!(vcpu, u64);
+    funcs!(rip, u64);
+    funcs!(rsp, u64);
+    funcs!(rflags, u64);
+    funcs!(cr3, u64);
+    funcs!(rax, u64);
+    funcs!(rdi, u64);
+    funcs!(rsi, u64);
+    funcs!(rdx, u64);
+    funcs!(rcx, u64);
+    funcs!(r8, u64);
+    funcs!(r9, u64);
 }
 
 pub struct VmplConfig {
@@ -280,11 +339,16 @@ impl GetPagesParams {
             phys: phys,
         }
     }
+
+    funcs!(num_pages, usize);
+    funcs!(phys, u64);
 }
 
 impl Display for GetPagesParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "num_pages: {}, phys: 0x{:x}", self.num_pages, self.phys)
+        let num_pages = self.num_pages;
+        let phys = self.phys;
+        write!(f, "num_pages: {}, phys: 0x{:x}", num_pages, phys)
     }
 }
 
@@ -305,6 +369,8 @@ impl SeimiParams {
 
 impl Display for SeimiParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "pgd_user: 0x{:x}, pgd_super: 0x{:x}", self.pgd_user, self.pgd_super)
+        let pgd_user = self.pgd_user;
+        let pgd_super = self.pgd_super;
+        write!(f, "pgd_user: 0x{:x}, pgd_super: 0x{:x}", pgd_user, pgd_super)
     }
 }

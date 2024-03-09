@@ -7,10 +7,28 @@ pub const PGSIZE: usize = 1 << PGSHIFT;
 pub const PAGE_SIZE: usize = 1 << PGSHIFT;
 pub const PAGE_2MB_SIZE: u64 = 1 << 21;
 
+#[cfg(not(feature = "vm"))]
 pub fn pgtable_init(fd: i32) -> Result<(), i32> {
     let _ = fd;
     println!("pgtable init");
     Ok(())
+}
+
+#[cfg(not(feature = "vm"))]
+pub fn pgtable_cleanup() {
+    println!("pgtable cleanup");
+}
+
+#[cfg(feature = "vm")]
+pub fn pgtable_init(fd: i32) -> Result<(), i32> {
+    let _ = fd;
+    println!("pgtable init");
+    Ok(())
+}
+
+#[cfg(feature = "vm")]
+pub fn pgtable_cleanup() {
+    println!("pgtable cleanup");
 }
 
 pub fn pgtable_va_to_pa(va: VirtAddr) -> PhysAddr {
@@ -32,8 +50,21 @@ pub fn pgtable_make_pages_shared(va: VirtAddr, len: usize) -> Result<(), i32> {
     Ok(())
 }
 
+pub fn pgtable_make_pages_private(va: VirtAddr, len: usize) -> Result<(), i32> {
+    let _ = va;
+    let _ = len;
+    println!("pgtable make pages private");
+    Ok(())
+}
+
 pub fn mem_allocate_frames(len: u64) -> Result<(), i32> {
     let _ = len;
     println!("mem allocate frames");
+    Ok(())
+}
+
+pub fn mem_free_frames(len: u64) -> Result<(), i32> {
+    let _ = len;
+    println!("mem free frames");
     Ok(())
 }
