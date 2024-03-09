@@ -6,12 +6,14 @@
  *          Tom Lendacky <thomas.lendacky@amd.com>
  */
 
-use core::mem::size_of;
 use core::ptr::copy_nonoverlapping;
+use std::fmt::{self, Display, Formatter};
 use memoffset::offset_of;
 use paste::paste;
-use x86_64::structures::paging::PhysFrame;
 use x86_64::VirtAddr;
+
+use crate::mm::pgtable_va_to_pa;
+use crate::BIT;
 
 /// 1
 pub const GHCB_VERSION_1: u16 = 1;
@@ -160,26 +162,31 @@ pub fn ghcb_init() {
     }
 }
 
-#[cfg(features = ["ghcb", "dump"])]
-pub fn dump_ghcb(ghcb: Option<&Ghcb>) {
-    match ghcb {
-        Some(ghcb) => {
-            log::debug!("GHCB dump:");
-            log::debug!("  cpl: {}", ghcb.cpl);
-            log::debug!("  rax: 0x{:x}", ghcb.rax);
-            log::debug!("  rcx: 0x{:x}", ghcb.rcx);
-            log::debug!("  rdx: 0x{:x}", ghcb.rdx);
-            log::debug!("  rbx: 0x{:x}", ghcb.rbx);
-            log::debug!("  sw_exit_code: 0x{:x}", ghcb.sw_exit_code);
-            log::debug!("  sw_exit_info_1: 0x{:x}", ghcb.sw_exit_info_1);
-            log::debug!("  sw_exit_info_2: 0x{:x}", ghcb.sw_exit_info_2);
-            log::debug!("  sw_scratch: 0x{:x}", ghcb.sw_scratch);
-            log::debug!("  xcr0: 0x{:x}", ghcb.xcr0);
-            log::debug!("  version: {}", ghcb.version);
-            log::debug!("  usage: {}", ghcb.usage);
-        }
-        None => {
-            log::warn!("GHCB is NULL");
-        }
+impl Display for Ghcb {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        let sw_exit_code = self.sw_exit_code;
+        let sw_exit_info_1 = self.sw_exit_info_1;
+        let sw_exit_info_2 = self.sw_exit_info_2;
+        let sw_scratch = self.sw_scratch;
+        let xcr0 = self.xcr0;
+        let version = self.version;
+        let usage = self.usage;
+        write!(f, "GHCB dump:\n")?;
+        write!(f, "  cpl: {}\n", self.cpl)?;
+        write!(f, "  rax: 0x{:x}\n", self.rax())?;
+        write!(f, "  rcx: 0x{:x}\n", self.rcx())?;
+        write!(f, "  rdx: 0x{:x}\n", self.rdx())?;
+        write!(f, "  rbx: 0x{:x}\n", self.rbx())?;
+        write!(f, "  sw_exit_code: 0x{:x}\n", sw_exit_code)?;
+        write!(f, "  sw_exit_info_1: 0x{:x}\n", sw_exit_info_1)?;
+        write!(f, "  sw_exit_info_2: 0x{:x}\n", sw_exit_info_2)?;
+        write!(f, "  sw_scratch: 0x{:x}\n", sw_scratch)?;
+        write!(f, "  xcr0: 0x{:x}\n", xcr0)?;
+        write!(f, "  version: {}\n", version)?;
+        write!(f, "  usage: {}\n", usage)
     }
+}
+
+pub fn get_early_ghcb() -> VirtAddr {
+    todo!()
 }

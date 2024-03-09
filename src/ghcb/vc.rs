@@ -9,20 +9,36 @@
 use crate::globals::*;
 use crate::*;
 
-use alloc::vec::Vec;
-use core::arch::asm;
-use core::mem::size_of;
+use std::arch::asm;
+use std::mem::size_of;
+use libc::MAP_FIXED;
+use libc::MAP_SHARED;
+use libc::PROT_READ;
+use libc::PROT_WRITE;
 use x86_64::addr::PhysAddr;
 use x86_64::addr::VirtAddr;
 use x86_64::structures::idt::*;
 use x86_64::structures::paging::frame::PhysFrame;
 
-use core::cmp::max;
-use core::cmp::min;
+use std::cmp::max;
+use std::cmp::min;
 
 use x86_64::registers::control::Cr4;
 use x86_64::registers::control::Cr4Flags;
 use x86_64::registers::xcontrol::XCr0;
+
+use self::mm::mem_allocate_frames;
+use self::mm::pgtable_make_pages_shared;
+use self::mm::pgtable_pa_to_va;
+use self::mm::pgtable_va_to_pa;
+use self::mm::PAGE_2MB_SIZE;
+use self::mm::PAGE_SIZE;
+use self::sys::ioctl::vmpl_ioctl::VmplFile;
+
+use super::globals::*;
+use super::ghcb::get_early_ghcb;
+use super::ghcb::SHARED_BUFFER_SIZE;
+use super::Ghcb;
 
 /// 2
 const GHCB_PROTOCOL_MIN: u64 = 2;
@@ -983,9 +999,68 @@ pub fn vc_early_make_pages_private(begin: PhysFrame, end: PhysFrame) {
     perform_page_state_change(ghcb, begin, end, PSC_PRIVATE);
 }
 
-pub fn vc_init() {
+pub fn vc_init(fd: VmplFile) {
     let ghcb_pa: PhysAddr = pgtable_va_to_pa(get_early_ghcb());
 
     vc_establish_protocol();
     vc_register_ghcb(ghcb_pa);
+}
+
+#[cfg(feature = "ghcb")]
+fn setup_ghcb(dune_fd: RawFd) -> Result<*mut Ghcb, std::io::Error> {
+    log::info!("setup ghcb");
+
+    let ghcb = unsafe {
+        mmap(
+            GHCB_MMAP_BASE as *mut libc::c_void,
+            PAGE_SIZE,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_FIXED,
+            dune_fd,
+            0,
+        )
+    };
+
+    if ghcb == MAP_FAILED {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "dune: failed to map GHCB",
+        ));
+    }
+
+    log::debug!("dune: GHCB at {:?}", ghcb);
+    unsafe {
+        memset(ghcb, 0, mem::size_of::<Ghcb>());
+        ghcb_set_version(ghcb, GHCB_PROTOCOL_MIN);
+        ghcb_set_usage(ghcb, GHCB_DEFAULT_USAGE);
+        ghcb_set_sw_exit_code(ghcb, GHCB_NAE_RUN_VMPL);
+        ghcb_set_sw_exit_info_1(ghcb, 0);
+        ghcb_set_sw_exit_info_2(ghcb, 0);
+    }
+
+    Ok(ghcb)
+}
+
+#[cfg(feature = "ghcb")]
+fn vc_init(dune_fd: RawFd) -> Result<*mut Ghcb, std::io::Error> {
+    log::info!("setup GHCB");
+    let ghcb_va = setup_ghcb(dune_fd)?;
+    if ghcb_va.is_null() {
+        log::error!("failed to setup GHCB");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "failed to setup GHCB",
+        ));
+    }
+
+    log::info!("setup VC");
+
+    let ghcb_pa = unsafe { pgtable_va_to_pa(ghcb_va as VirtAddr) };
+    log::debug!("ghcb_pa: {:x}", ghcb_pa);
+
+    vc_establish_protocol();
+    vc_register_ghcb(ghcb_pa);
+    vc_set_ghcb(ghcb_va);
+
+    Ok(ghcb_va)
 }

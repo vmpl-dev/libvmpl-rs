@@ -1,30 +1,3 @@
-use x86_64::VirtAddr;
-use x86_64::PhysAddr;
-use x86_64::addr::Offset;
-use x86_64::instructions::{hlt, wrmsr, rdmsr};
-use x86_64::instructions::interrupts::{int3, int, int3_with_ss};
-use x86_64::instructions::port::Port;
-use x86_64::instructions::tables::{lgdt, lidt, sgdt, sidt};
-use x86_64::instructions::tables::{lldt, sldt, ltr, str};
-use x86_64::registers::control::{Cr0, Cr0Flags, Cr4, Cr4Flags};
-use x86_64::registers::control::{Cr3, Cr3Flags, Cr3PageTablePointer};
-use x86_64::registers::control::{Cr8};
-use x86_64::registers::control::{Efer, EferFlags};
-use x86_64::registers::debug::{Dr7, Dr7Flags};
-use x86_64::registers::model_specific::{Efer, EferFlags};
-use x86_64::registers::msr::{IA32_EFER, IA32_FS_BASE, IA32_GS_BASE, IA32_KERNEL_GS_BASE};
-use x86_64::registers::msr::{IA32_SYSENTER_CS, IA32_SYSENTER_EIP, IA32_SYSENTER_ESP};
-use x86_64::registers::msr::{IA32_STAR, IA32_LSTAR, IA32_FMASK};
-use x86_64::registers::msr::{IA32_TSC, IA32_TSC_AUX};
-use x86_64::registers::msr::{IA32_APIC_BASE, IA32_FEATURE_CONTROL, IA32_MISC_ENABLE};
-use x86_64::registers::mxcsr::Mxcsr;
-use x86_64::registers::rflags::RFlags;
-use x86_64::registers::segmentation::{Cs, Ds, Es, Fs, Gs, Ss};
-use x86_64::structures::gdt::DescriptorFlags;
-use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentDescriptor, SegmentSelector};
-use x86_64::structures::tss::TaskStateSegment;
-use x86_64::structures::DescriptorTablePointer;
-
 const MAX_LINE_LENGTH: usize = 256;
 
 /*
@@ -39,7 +12,7 @@ const GD_UD: u32 = 0x28;
 const GD_UT: u32 = 0x30;
 const GD_TSS: u32 = 0x38;
 const GD_TSS2: u32 = 0x40;
-const NR_GDT_ENTRIES: u32 = 9;
+pub(crate) const NR_GDT_ENTRIES: u32 = 9;
 
 const KERNEL_CODE32: u64 = 0x00cf9b000000ffff; // [G], [D], L, AVL, [P], DPL=0, [1], [1], C, [R], [A]
 const KERNEL_CODE64: u64 = 0x00af9b000000ffff; // [G], D, [L], AVL, [P], DPL=0, [1], [1], C, [R], [A]

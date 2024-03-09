@@ -1,14 +1,18 @@
 use core::arch::global_asm;
+use std::ffi::c_char;
+
+use crate::sys::core::{DuneConfig, DuneTrapFrame};
 
 global_asm!(include_str!("dune.S"));
 global_asm!(include_str!("vsyscall.S"));
 
+type DuneIntrCb = fn(tf: &mut DuneTrapFrame);
+type DunePgfltCb = fn(addr: usize, fec: u64, tf: &mut DuneTrapFrame);
+type DuneSyscallCb = fn(tf: &mut DuneTrapFrame);
+type SighandlerT = fn(signum: i32);
+
 extern "C" {
     // your extern functions here
-    type DuneIntrCb = fn(tf: &mut DuneTrapFrame);
-    type DunePgfltCb = fn(addr: usize, fec: u64, tf: &mut DuneTrapFrame);
-    type DuneSyscallCb = fn(tf: &mut DuneTrapFrame);
-    type SighandlerT = fn(signum: i32);
 
     // dune fd for the current process
     pub static DUNE_FD: i32;

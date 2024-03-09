@@ -1,6 +1,8 @@
 
 // pgtable.c
 
+use std::fmt::Display;
+
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct VmplParam {
@@ -52,6 +54,50 @@ pub struct VmsaSeg {
     base: u64,
 }
 
+impl VmsaSeg {
+    pub fn new(selector: u16, attrib: u16, limit: u32, base: u64) -> VmsaSeg {
+        VmsaSeg {
+            selector: selector,
+            attrib: attrib,
+            limit: limit,
+            base: base,
+        }
+    }
+
+    pub fn fs(base: u64) -> VmsaSeg {
+        VmsaSeg {
+            selector: 0x33,
+            attrib: 0x008b,
+            limit: 0xffff,
+            base: base,
+        }
+    }
+
+    pub fn gs(base: u64) -> VmsaSeg {
+        VmsaSeg {
+            selector: 0x3b,
+            attrib: 0x008b,
+            limit: 0xffff,
+            base: base,
+        }
+    }
+
+    pub fn tr(selector: u16, base: u64, limit: u32, attrib: u16) -> VmsaSeg {
+        VmsaSeg {
+            selector: selector,
+            attrib: attrib,
+            limit: limit,
+            base: base,
+        }
+    }
+}
+
+impl Display for VmsaSeg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "selector: 0x{:x}, attrib: 0x{:x}, limit: 0x{:x}, base: 0x{:x}", self.selector, self.attrib, self.limit, self.base)
+    }
+}
+
 #[repr(C, packed)]
 #[derive(Debug, Default)]
 pub struct VmplSegs {
@@ -74,9 +120,15 @@ impl VmplSegs {
     }
 }
 
+impl Display for VmplSegs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fs: {}, gs: {}, gdtr: {}, idtr: {}, tr: {}", self.fs, self.gs, self.gdtr, self.idtr, self.tr)
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Default)]
-pub struct VmsaConfig {
+pub struct DuneConfig {
     ret: i64,
     rax: u64,
     rbx: u64,
@@ -101,10 +153,10 @@ pub struct VmsaConfig {
     vcpu: u64,
 }
 
-impl VmsaConfig {
+impl DuneConfig {
 
-    pub fn new(rip: u64, rsp: u64, rflags: u64) -> VmsaConfig {
-        VmsaConfig {
+    pub fn new(rip: u64, rsp: u64, rflags: u64) -> DuneConfig {
+        DuneConfig {
             ret: 0,
             rax: 0,
             rbx: 0,
@@ -129,6 +181,14 @@ impl VmsaConfig {
             vcpu: 0,
         }
     }
+}
+
+pub struct VmplConfig {
+    pub vcpu: u64,
+    pub rip: u64,
+    pub rsp: u64,
+    pub rflags: u64,
+    pub cr3: u64,
 }
 
 #[repr(C)]
@@ -222,6 +282,12 @@ impl GetPagesParams {
     }
 }
 
+impl Display for GetPagesParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "num_pages: {}, phys: 0x{:x}", self.num_pages, self.phys)
+    }
+}
+
 #[repr(C, packed)]
 pub struct SeimiParams {
     pgd_user: u64,
@@ -234,5 +300,11 @@ impl SeimiParams {
             pgd_user: pgd_user,
             pgd_super: pgd_super,
         }
+    }
+}
+
+impl Display for SeimiParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "pgd_user: 0x{:x}, pgd_super: 0x{:x}", self.pgd_user, self.pgd_super)
     }
 }

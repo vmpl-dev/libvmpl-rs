@@ -1,10 +1,16 @@
+use std::ops::ShrAssign;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::alloc::{alloc, dealloc, Layout};
 use std::mem::size_of;
 use std::ptr::null_mut;
 use libc::sched_getcpu;
-use libc;
-use num_cpus;
+use x86_64::registers::model_specific::Msr;
+use std::arch::asm;
+
+/// APIC related constants
+const MSR_APIC_BASE: u32 = 0x1B;
+const MSR_APIC_ICR: u32 = 0x830;
+const MSR_APIC_EOI: u32 = 0x80B;
 
 const APIC_DM_FIXED: u32 = 0x00000;
 const NMI_VECTOR: i32 = 0x02;
@@ -12,13 +18,16 @@ const APIC_DM_NMI: u32 = 0x00400;
 const APIC_DEST_PHYSICAL: u32 = 0x00000;
 const EOI_ACK: u32 = 0x0;
 
+/// APIC routing table
 static mut APIC_ROUTING: *mut u32 = null_mut();
 static NUM_RT_ENTRIES: AtomicUsize = AtomicUsize::new(0);
 
 pub fn apic_get_id() -> u32 {
-    let apic_id: u64;
-    unsafe { asm!("rdmsr", in("ecx") MSR_APIC_ID, out("eax") apic_id, options(nomem, nostack)) };
-    apic_id as u32
+    unsafe { 
+        let mut value: u64 = Msr::new(MSR_APIC_BASE).read();
+        value.shr_assign(24);
+        value as u32
+    }
 }
 
 pub fn apic_setup() -> Result<(), i32> {
@@ -65,7 +74,7 @@ pub fn apic_get_id_for_cpu(cpu: u32, error: &mut bool) -> u32 {
     unsafe { *APIC_ROUTING.offset(cpu as isize) }
 }
 
-pub fn __prepare_icr(shortcut: u32, vector: i32, dest: u32) -> u32 {
+fn __prepare_icr(shortcut: u32, vector: i32, dest: u32) -> u32 {
     let mut icr = shortcut | dest;
     match vector {
         NMI_VECTOR => icr |= APIC_DM_NMI,

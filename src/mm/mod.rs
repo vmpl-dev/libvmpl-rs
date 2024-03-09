@@ -5,5 +5,8 @@ pub mod vm;
 pub mod mm;
 
 
-pub use crate::mm::{setup_stack, setup_heap};
-pub use crate::mm::mm::setup_mm;
+pub use page::*;
+pub use pgtable::*;
+pub use vma::*;
+pub use vm::*;
+pub use mm::*;

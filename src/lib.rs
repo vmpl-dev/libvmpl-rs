@@ -1,4 +1,6 @@
 pub mod globals;
+pub mod error;
+pub mod util;
 pub mod sys;
 pub mod mm;
 pub mod ghcb;

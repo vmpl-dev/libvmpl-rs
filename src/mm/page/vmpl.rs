@@ -1,14 +1,19 @@
+/// Convert a physical address to a page pointer.
+/// VMPL PAGE MANAGEMENT
+/// @mbs0221 - 2021-08-10
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::ptr::NonNull;
-use std::collections::LinkedList;
 use std::ptr;
-use std::mem;
 
-// -----------------------VMPL PAGE MANAGEMENT-----------------------
+use x86_64::PhysAddr;
+
+use crate::mm::page::common::{MAX_PAGES, PAGEBASE, PAGES};
+use crate::mm::pgtable::PGSHIFT;
+
+use super::common::{get_page, put_page, Page, PAGE_FLAG_MAPPED, PAGE_FLAG_POOL};
 
 pub fn vmpl_pa2page(pa: PhysAddr) -> *mut Page {
     assert!(pa >= PAGEBASE);
-    assert!(pa < (PAGEBASE + (MAX_PAGES << PGSHIFT)));
+    assert!(pa < (PAGEBASE + ((MAX_PAGES as u64) << PGSHIFT)));
     unsafe { PAGES.unwrap().as_ptr().offset((pa - PAGEBASE) as isize) }
 }
 
@@ -49,7 +54,7 @@ pub fn vmpl_page_get_addr(pa: PhysAddr) -> *mut Page {
         return std::ptr::null_mut();
     }
     let pg = vmpl_pa2page(pa);
-    if unsafe { vmpl_page_is_from_pool(pa) } {
+    if vmpl_page_is_from_pool(pa) {
         vmpl_page_get(pg);
     }
     pg
@@ -64,11 +69,27 @@ pub fn vmpl_page_put(pg: *mut Page) {
 
 pub fn vmpl_page_put_addr(pa: PhysAddr) {
     let pg = vmpl_pa2page(pa);
-    if unsafe { vmpl_page_is_from_pool(pa) } {
+    if vmpl_page_is_from_pool(pa) {
         vmpl_page_put(pg);
     }
 }
 
-pub fn vmpl_page_alloc(fd: i32) -> *mut Page;
-pub fn vmpl_page_free(pg: *mut Page);
-pub fn vmpl_page_stats();
+pub fn vmpl_page_init(fd: i32) -> i32 {
+    todo!("vmpl_page_init: {}", fd);
+}
+
+pub fn vmpl_page_alloc(fd: i32) -> *mut Page {
+    todo!("vmpl_page_alloc: {}", fd);
+}
+
+pub fn vmpl_page_free(pg: *mut Page) {
+    todo!("vmpl_page_free: {:?}", pg);
+}
+
+pub fn vmpl_page_stats() {
+    todo!("vmpl_page_stats");
+}
+
+pub fn vmpl_page_test(vmpl_fd: i32) {
+    todo!("vmpl_page_test: {}", vmpl_fd);
+}
