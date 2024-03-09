@@ -29,8 +29,6 @@ impl From<i32> for VmplError {
     }
 }
 
-
-
 impl fmt::Display for VmplError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "VMPL Error: ");
@@ -40,6 +38,10 @@ impl fmt::Display for VmplError {
             VmplError::ApicSetupFailed(e) => write!(f, "failed to setup APIC"),
             #[cfg(feature = "seimi")]
             VmplError::SeimiSetupFailed(e) => write!(f, "failed to setup SEIMI"),
+            VmplError::SyscallSetupFailed(e) => write!(f, "failed to setup syscall"),
+            VmplError::VsyscallSetupFailed(e) => write!(f, "failed to setup vsyscall"),
+            VmplError::MemorySetupFailed(e) => write!(f, "failed to setup memory management"),
+            VmplError::SafeStackSetupFailed(e) => write!(f, "failed to setup safe stack"),
         }
     }
 }

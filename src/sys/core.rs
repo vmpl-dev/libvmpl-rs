@@ -207,7 +207,7 @@ impl DuneConfig {
 
     pub fn on_dune_syscall(&self) {
         self.rax = unsafe {
-            libc::syscall(self.status,self.rdi,self.rsi,self.rdx,self.r10,self.r8,self.r9);
+            libc::syscall(self.status,self.rdi,self.rsi,self.rdx,self.r10,self.r8,self.r9) as u64
         };
 
         unsafe {

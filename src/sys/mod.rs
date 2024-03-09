@@ -20,8 +20,10 @@ pub mod signal;
 pub mod syscall;
 
 pub use crate::sys::x86_64::*;
+#[cfg(feature = "apic")]
 pub use crate::sys::apic::*;
 pub use crate::sys::percpu::*;
+#[cfg(feature = "seimi")]
 pub use crate::sys::seimi::seimi_init;
 pub use crate::sys::signal::signal_init;
 pub use crate::sys::serial::serial_init;

@@ -134,7 +134,9 @@ impl VmplSystem {
             .write(true)
             .open(RUN_VMPL_DEV_NAME)?;
 
+        #[cfg(feature = "mm")]
         mm_init(self.dune_fd)?;
+        #[cfg(feature = "seimi")]
         seimi_init(dune_fd)?;
         setup_syscall(dune_fd.as_raw_fd())?;
         setup_vsyscall()?;

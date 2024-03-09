@@ -28,14 +28,16 @@ use super::core::VmplSegs;
 use super::core::VmsaSeg;
 use super::ioctl::vmpl_ioctl::VmplFile;
 
-const NR_GDT_ENTRIES: usize = 0; // 需要根据实际的值来修改
-
 #[cfg(feature = "xsave")]
 const XSAVE_SIZE: usize = 4096;
 #[cfg(feature = "xsave")]
 const XCR_XFEATURE_ENABLED_MASK: u32 = 0x00000000;
 /// Global variable to indicate whether VMPL has been booted
 const VMPL_BOOTED: bool = false;
+
+type DuneSyscall = extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64;
+type VmplSyscall = extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64;
+type VSyscall = extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64;
 
 #[repr(C)]
 pub struct DunePerCpu {
@@ -47,6 +49,8 @@ pub struct DunePerCpu {
     tss: TaskStateSegment,
     gdt: [u64; NR_GDT_ENTRIES],
     ghcb: *mut Ghcb,
+    lstar: Box<DuneSyscall>,
+    vsyscall: Box<VSyscall>,
     xsave_area: *mut c_char,
     xsave_mask: u64,
     pkey: c_int,
@@ -355,7 +359,6 @@ impl DunePerCpu {
         // write fsbase and gsbase use x86_64
         x86_64::instructions::segmentation::FS;
 
-
         VMPL_BOOTED = true;
 
         self.dune_boot()?;
@@ -374,7 +377,7 @@ impl Display for DunePerCpu {
         write!(f, "percpu_ptr: {:p}\n", self.percpu_ptr)?;
         write!(f, "kfs_base: {:#x} ufs_base: {:#x}\n", self.kfs_base, self.ufs_base)?;
         write!(f, "in_usermode: {}\n", self.in_usermode)?;
-        write!(f, "tss: {:p} gdt: {:p}", &self.tss, self.gdt)?;
+        write!(f, "tss: {:p} gdt: {:p}", &self.tss, &self.gdt)?;
         write!(f, "ghcb: {:p}", self.ghcb)?;
         write!(f, "lstar: {:p} vsyscall: {:p}", self.lstar, self.vsyscall)?;
         f.write_str("\n")
